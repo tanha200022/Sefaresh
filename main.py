@@ -2,7 +2,7 @@ import flet as ft
 import jdatetime
 
 def main(page: ft.Page):
-    page.title = "سیستم مدیریت سفارشات"
+    page.title = "مدیریت سفارشات فروشگاه انصاری"
     page.theme_mode = ft.ThemeMode.LIGHT
     page.window_width = 400
     page.window_height = 700
@@ -10,7 +10,7 @@ def main(page: ft.Page):
     page.theme = ft.Theme(text_theme=ft.TextTheme(body_medium=ft.TextStyle(size=20)))
     page.rtl = True
 
-    companies = [] # لیست شرکت‌ها از دیتابیس ابری دریافت می‌شود
+    companies = [] # لیست شرکت‌ها (در آینده به دیتابیس متصل می‌شود)
     orders = [] # لیست سفارشات
 
     # --- توابع کمکی فرمت‌دهی ---
@@ -41,7 +41,7 @@ def main(page: ft.Page):
     # --- فیلدهای فرم افزودن کالا ---
     today_shamsi = jdatetime.date.today().strftime("%Y/%m/%d")
     
-    txt_item_name = ft.TextField(label="نام کالا", text_size=20, on_submit=lambda e: move_focus(e, txt_buy_price))
+    txt_item_name = ft.TextField(label="نام کالا (مانند کاکائو، گوشت...)", text_size=20, on_submit=lambda e: move_focus(e, txt_buy_price))
     txt_buy_price = ft.TextField(label="قیمت خرید", text_size=20, on_change=format_currency, on_submit=lambda e: move_focus(e, txt_sell_price))
     txt_sell_price = ft.TextField(label="قیمت مصرف", text_size=20, on_change=format_currency, on_submit=lambda e: move_focus(e, txt_settlement))
     txt_margin = ft.TextField(label="حاشیه سود (%)", text_size=20, read_only=True)
@@ -55,23 +55,34 @@ def main(page: ft.Page):
         item_dialog.open = False
         page.update()
 
+    def clear_item_fields():
+        txt_item_name.value = ""
+        txt_buy_price.value = ""
+        txt_sell_price.value = ""
+        txt_margin.value = ""
+        txt_settlement.value = ""
+        txt_qty.value = ""
+        txt_desc.value = ""
+
     def save_item(e):
-        # در اینجا کد ارسال اطلاعات به Firebase/Supabase قرار می‌گیرد
-        # پس از ذخیره موفق، لیست بروزرسانی می‌شود
         company = company_dropdown.value
-        orders.append({
-            "company": company, "item": txt_item_name.value, 
-            "qty": txt_qty.value, "date": txt_date.value
-        })
-        close_item_dlg(e)
-        refresh_orders_list()
+        if txt_item_name.value and txt_qty.value:
+            orders.append({
+                "company": company, 
+                "item": txt_item_name.value, 
+                "qty": txt_qty.value, 
+                "date": txt_date.value
+            })
+            clear_item_fields()
+            close_item_dlg(e)
+            refresh_orders_list()
 
     item_dialog = ft.AlertDialog(
-        title=ft.Text("ثبت کالای جدید"),
+        title=ft.Text("ثبت کالای جدید", size=22, weight=ft.FontWeight.BOLD),
         content=ft.Column([
             txt_item_name, txt_buy_price, txt_sell_price, txt_margin, 
             txt_settlement, txt_qty, txt_date, txt_desc
-        ], scroll=ft.ScrollMode.AUTO, height=400),
+        ], scroll=ft.ScrollMode.AUTO, height=450),
         actions=[
             ft.TextButton("ثبت کالا", on_click=save_item),
             ft.TextButton("انصراف", on_click=close_item_dlg)
@@ -100,14 +111,19 @@ def main(page: ft.Page):
 
     def save_company(e):
         new_comp = txt_comp_name.value
-        companies.append(new_comp)
-        company_dropdown.options.append(ft.dropdown.Option(new_comp))
-        company_dropdown.value = new_comp
-        close_comp_dlg(e)
-        # در اینجا متد ارسال شرکت به سرور فراخوانی می‌شود
+        if new_comp:
+            companies.append(new_comp)
+            company_dropdown.options.append(ft.dropdown.Option(new_comp))
+            company_dropdown.value = new_comp
+            # پاک کردن فیلدها برای دفعات بعد
+            txt_comp_name.value = ""
+            txt_visitor.value = ""
+            txt_phone.value = ""
+            close_comp_dlg(e)
+            refresh_orders_list()
 
     comp_dialog = ft.AlertDialog(
-        title=ft.Text("افزودن شرکت جدید"),
+        title=ft.Text("افزودن شرکت جدید", size=22, weight=ft.FontWeight.BOLD),
         content=ft.Column([txt_comp_name, txt_visitor, txt_phone], height=250),
         actions=[
             ft.TextButton("ثبت شرکت", on_click=save_company),
@@ -121,29 +137,37 @@ def main(page: ft.Page):
         page.update()
 
     # --- رابط کاربری اصلی ---
+    
+    # اصلاح خطای Dropdown با تعریف ویژگی on_change در خارج از پرانتز
     company_dropdown = ft.Dropdown(
         label="انتخاب شرکت",
         options=[],
         width=250,
-        text_size=20,
-        on_change=lambda e: refresh_orders_list()
+        text_size=20
     )
+    company_dropdown.on_change = lambda e: refresh_orders_list()
 
     orders_list = ft.ListView(expand=True, spacing=10)
+
+    def delete_order(order_to_delete):
+        if order_to_delete in orders:
+            orders.remove(order_to_delete)
+            refresh_orders_list()
 
     def refresh_orders_list():
         orders_list.controls.clear()
         selected_company = company_dropdown.value
         for ord in orders:
             if ord['company'] == selected_company:
+                current_ord = ord
                 orders_list.controls.append(
                     ft.Card(
                         content=ft.ListTile(
-                            title=ft.Text(f"{ord['item']} - {ord['qty']} کارتن", size=20, weight=ft.FontWeight.BOLD),
-                            subtitle=ft.Text(f"تاریخ سفارش: {ord['date']}", size=16),
+                            title=ft.Text(f"{current_ord['item']} - {current_ord['qty']} کارتن", size=20, weight=ft.FontWeight.BOLD),
+                            subtitle=ft.Text(f"تاریخ سفارش: {current_ord['date']}", size=16),
                             trailing=ft.Row([
-                                ft.IconButton(ft.icons.EDIT, tooltip="ویرایش"),
-                                ft.IconButton(ft.icons.DELETE, tooltip="حذف", icon_color="red")
+                                ft.IconButton(ft.icons.EDIT, tooltip="ویرایش", icon_color="blue"),
+                                ft.IconButton(ft.icons.DELETE, tooltip="حذف", icon_color="red", on_click=lambda e, o=current_ord: delete_order(o))
                             ], tight=True)
                         )
                     )
@@ -152,9 +176,9 @@ def main(page: ft.Page):
 
     # چیدمان صفحه اصلی
     page.add(
-        ft.Row([company_dropdown, ft.IconButton(ft.icons.ADD_BUSINESS, on_click=open_add_company, tooltip="افزودن شرکت")], alignment=ft.MainAxisAlignment.CENTER),
+        ft.Row([company_dropdown, ft.IconButton(ft.icons.ADD_BUSINESS, on_click=open_add_company, tooltip="افزودن شرکت", icon_size=30)], alignment=ft.MainAxisAlignment.CENTER),
         ft.Divider(),
-        ft.ElevatedButton("ثبت کالای جدید", on_click=open_add_item, icon=ft.icons.ADD_SHOPPING_CART, width=300),
+        ft.ElevatedButton("ثبت کالای جدید", on_click=open_add_item, icon=ft.icons.ADD_SHOPPING_CART, width=300, height=50, style=ft.ButtonStyle(text_style=ft.TextStyle(size=20))),
         ft.Divider(),
         ft.Text("لیست سفارشات این شرکت:", size=20, weight=ft.FontWeight.BOLD),
         orders_list
