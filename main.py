@@ -6,16 +6,13 @@ def main(page: ft.Page):
     page.theme_mode = ft.ThemeMode.LIGHT
     page.window_width = 400
     page.window_height = 700
-    # تنظیم فونت پایه روی 20
     page.theme = ft.Theme(text_theme=ft.TextTheme(body_medium=ft.TextStyle(size=20)))
     page.rtl = True
 
-    companies = [] # لیست شرکت‌ها (در آینده به دیتابیس متصل می‌شود)
-    orders = [] # لیست سفارشات
+    companies = [] 
+    orders = [] 
 
-    # --- توابع کمکی فرمت‌دهی ---
     def format_currency(e):
-        # حذف کاماهای قبلی و اعمال جداکننده هزارگان
         value = e.control.value.replace(",", "")
         if value.isdigit():
             e.control.value = f"{int(value):,}"
@@ -23,7 +20,6 @@ def main(page: ft.Page):
             calculate_margin(e)
 
     def calculate_margin(e):
-        # محاسبه خودکار درصد اختلاف قیمت خرید و مصرف
         try:
             buy = float(txt_buy_price.value.replace(",", ""))
             sell = float(txt_sell_price.value.replace(",", ""))
@@ -35,10 +31,8 @@ def main(page: ft.Page):
             pass
 
     def move_focus(e, next_control):
-        # رفتن به کادر بعدی با زدن دکمه Enter
         next_control.focus()
 
-    # --- فیلدهای فرم افزودن کالا ---
     today_shamsi = jdatetime.date.today().strftime("%Y/%m/%d")
     
     txt_item_name = ft.TextField(label="نام کالا (مانند کاکائو، گوشت...)", text_size=20, on_submit=lambda e: move_focus(e, txt_buy_price))
@@ -50,7 +44,6 @@ def main(page: ft.Page):
     txt_date = ft.TextField(label="تاریخ تحویل", value=today_shamsi, text_size=20, on_submit=lambda e: move_focus(e, txt_desc))
     txt_desc = ft.TextField(label="توضیحات", text_size=20, multiline=True)
 
-    # --- دیالوگ افزودن کالا ---
     def close_item_dlg(e):
         item_dialog.open = False
         page.update()
@@ -100,7 +93,6 @@ def main(page: ft.Page):
         page.update()
         txt_item_name.focus()
 
-    # --- دیالوگ افزودن شرکت ---
     txt_comp_name = ft.TextField(label="نام شرکت", text_size=20)
     txt_visitor = ft.TextField(label="نام ویزیتور", text_size=20)
     txt_phone = ft.TextField(label="شماره تلفن", text_size=20)
@@ -115,7 +107,6 @@ def main(page: ft.Page):
             companies.append(new_comp)
             company_dropdown.options.append(ft.dropdown.Option(new_comp))
             company_dropdown.value = new_comp
-            # پاک کردن فیلدها برای دفعات بعد
             txt_comp_name.value = ""
             txt_visitor.value = ""
             txt_phone.value = ""
@@ -136,9 +127,6 @@ def main(page: ft.Page):
         comp_dialog.open = True
         page.update()
 
-    # --- رابط کاربری اصلی ---
-    
-    # اصلاح خطای Dropdown با تعریف ویژگی on_change در خارج از پرانتز
     company_dropdown = ft.Dropdown(
         label="انتخاب شرکت",
         options=[],
@@ -174,7 +162,6 @@ def main(page: ft.Page):
                 )
         page.update()
 
-    # چیدمان صفحه اصلی
     page.add(
         ft.Row([company_dropdown, ft.IconButton(ft.icons.ADD_BUSINESS, on_click=open_add_company, tooltip="افزودن شرکت", icon_size=30)], alignment=ft.MainAxisAlignment.CENTER),
         ft.Divider(),
@@ -184,5 +171,8 @@ def main(page: ft.Page):
         orders_list
     )
 
-if __name__ == "__main__":
+# --- اجرای هوشمند برنامه (حل ارور اندروید) ---
+# این دستور چک می‌کند که اگر قابلیت app وجود داشت (مثل ویندوز) اجرا شود،
+# و اگر نبود (مثل اندروید) بدون خطا رد شود تا موتور فلت خودش کار را انجام دهد.
+if hasattr(ft, 'app'):
     ft.app(target=main)
