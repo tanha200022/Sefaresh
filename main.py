@@ -171,4 +171,4 @@ def main(page: ft.Page):
         orders_list
     )
 
-ft.app(main)
+ft.app(target=main)
