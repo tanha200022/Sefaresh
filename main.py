@@ -1,7 +1,6 @@
 import flet as ft
 import traceback
 
-# سیستم ردیاب: اگر کتابخانه تاریخ شمسی ارور داد، مچ آن را می‌گیرد
 global_error = ""
 try:
     import jdatetime
@@ -9,7 +8,6 @@ except Exception as e:
     global_error = traceback.format_exc()
 
 def main(page: ft.Page):
-    # اگر اروری در زمان لود شدن رخ داده باشد، اینجا روی صفحه چاپ می‌شود
     if global_error != "":
         page.add(ft.Text(f"Startup Error:\n{global_error}", color="red", size=14, rtl=False))
         return
@@ -173,17 +171,16 @@ def main(page: ft.Page):
                     )
             page.update()
 
-        # افزودن کنترل‌ها به صفحه
+        # ارور استایل‌دهی باتن حل شد (کد زیر تغییر کرد)
         page.add(
             ft.Row([company_dropdown, ft.IconButton(ft.icons.ADD_BUSINESS, on_click=open_add_company, tooltip="افزودن شرکت", icon_size=30)], alignment=ft.MainAxisAlignment.CENTER),
             ft.Divider(),
-            ft.ElevatedButton("ثبت کالای جدید", on_click=open_add_item, icon=ft.icons.ADD_SHOPPING_CART, width=300, height=50, style=ft.ButtonStyle(text_style=ft.TextStyle(size=20))),
+            ft.ElevatedButton("ثبت کالای جدید", on_click=open_add_item, icon=ft.icons.ADD_SHOPPING_CART, width=300, height=50),
             ft.Divider(),
             ft.Text("لیست سفارشات:", size=20, weight=ft.FontWeight.BOLD),
             orders_list
         )
 
-    # اگر کدها در حین رسم دکمه‌ها ارور دهند، اینجا شکار می‌شود
     except Exception as e:
         page.add(ft.Text(f"UI Error:\n{traceback.format_exc()}", color="red", size=14, rtl=False))
         page.update()
