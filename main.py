@@ -20,7 +20,6 @@ def main(page: ft.Page):
         page.theme_mode = ft.ThemeMode.LIGHT
         page.bgcolor = ft.colors.BLUE_GREY_50
         page.rtl = True
-        page.scroll = ft.ScrollMode.AUTO
         page.theme = ft.Theme(
             text_theme=ft.TextTheme(body_medium=ft.TextStyle(size=18)),
             color_scheme_seed=ft.colors.TEAL
@@ -43,6 +42,43 @@ def main(page: ft.Page):
         def save_data():
             page.client_storage.set("companies", companies)
             page.client_storage.set("orders", orders)
+
+        def migrate_data():
+            """سازگاری با داده‌های ذخیره‌شده از نسخهٔ قدیمی برنامه (شرکت=رشته، سفارش بدون id/company_id)."""
+            changed = False
+            name_to_id = {}
+
+            if companies and isinstance(companies[0], str):
+                old_names = list(companies)
+                companies.clear()
+                for name in old_names:
+                    cid = str(uuid.uuid4())
+                    companies.append({"id": cid, "name": name, "visitor": "", "phone": ""})
+                    name_to_id[name] = cid
+                changed = True
+            else:
+                name_to_id = {c["name"]: c["id"] for c in companies if isinstance(c, dict) and "id" in c}
+
+            for o in list(orders):
+                if not isinstance(o, dict):
+                    orders.remove(o)
+                    changed = True
+                    continue
+                if "id" not in o:
+                    o["id"] = str(uuid.uuid4())
+                    changed = True
+                if "company_id" not in o:
+                    o["company_id"] = name_to_id.get(o.get("company", ""), "")
+                    changed = True
+                for k, default in [("buy_price", None), ("sell_price", None), ("margin", ""), ("settlement", ""), ("desc", "")]:
+                    if k not in o:
+                        o[k] = default
+                        changed = True
+
+            if changed:
+                save_data()
+
+        migrate_data()
 
         # --- توابع کمکی ---
         def to_number(value):
