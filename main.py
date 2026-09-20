@@ -1,850 +1,560 @@
-import sqlite3
+import asyncio
+import os
 import traceback
 import uuid
-from pathlib import Path
 
 import flet as ft
-import jdatetime
 
+try:
+    import jdatetime
+except Exception:
+    jdatetime = None
 
-APP_NAME = "سفارشات انصاری"
+# ---------- سازگاری با نسخه های مختلف flet ----------
+Colors = getattr(ft, "Colors", None) or ft.colors
+Icons  = getattr(ft, "Icons", None) or ft.icons
 
+try:
+    _Option = ft.DropdownOption          # flet >= 0.26
+except AttributeError:
+    _Option = ft.dropdown.Option         # flet < 0.26
 
-def today_shamsi() -> str:
-    return jdatetime.date.today().strftime("%Y/%m/%d")
+def option(key, text):
+    return _Option(key=key, text=text)
 
+HAS_SCREENSHOT = hasattr(ft, "Screenshot")
 
-def parse_number(value):
+# ---------- ابزارهای کمکی ----------
+_DIGITS_MAP = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+def normalize_digits(value):
+    return (value or "").translate(_DIGITS_MAP)
+
+def to_number(value):
     if value is None:
         return None
-    cleaned = str(value).replace(",", "").replace("،", "").replace(" ", "").strip()
-    if not cleaned:
+    cleaned = normalize_digits(str(value)).replace(",", "").strip()
+    if cleaned == "":
         return None
     try:
         return float(cleaned)
-    except (TypeError, ValueError):
+    except ValueError:
         return None
 
+def qty_text(value):
+    q = to_number(str(value))
+    return f"{q:g}" if q is not None else str(value or "")
 
-def fmt_money(value) -> str:
-    if value in (None, ""):
-        return "—"
-    try:
-        return f"{int(round(float(value))):,} تومان"
-    except (TypeError, ValueError):
-        return "—"
+def money(value):
+    return f"{int(value):,}" if value else ""
 
-
-def app_data_dir() -> Path:
-    # Android/desktop writable storage.
-    try:
-        from flet import app_storage_path
-        path = app_storage_path()
-        if path:
-            p = Path(path)
-            p.mkdir(parents=True, exist_ok=True)
-            return p
-    except Exception:
-        pass
-
-    p = Path(__file__).resolve().parent / ".data"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-DB_PATH = app_data_dir() / "ansari_orders.db"
-
-
-class Database:
-    def __init__(self, path: Path):
-        self.conn = sqlite3.connect(str(path), check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA foreign_keys = ON")
-        self.init_schema()
-
-    def init_schema(self):
-        self.conn.executescript("""
-        CREATE TABLE IF NOT EXISTS companies (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL UNIQUE,
-            visitor TEXT NOT NULL DEFAULT '',
-            phone TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS orders (
-            id TEXT PRIMARY KEY,
-            company_id TEXT NOT NULL,
-            item TEXT NOT NULL,
-            buy_price REAL,
-            sell_price REAL,
-            margin REAL,
-            settlement INTEGER,
-            qty REAL NOT NULL,
-            date TEXT NOT NULL,
-            desc TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_orders_company
-        ON orders(company_id);
-        """)
-        self.conn.commit()
-
-    def companies(self):
-        return self.conn.execute(
-            "SELECT * FROM companies ORDER BY name"
-        ).fetchall()
-
-    def add_company(self, name, visitor, phone):
-        cid = str(uuid.uuid4())
-        now = today_shamsi()
-        self.conn.execute(
-            """INSERT INTO companies
-               (id,name,visitor,phone,created_at)
-               VALUES(?,?,?,?,?)""",
-            (cid, name, visitor, phone, now),
-        )
-        self.conn.commit()
-        return cid
-
-    def delete_company(self, cid):
-        self.conn.execute("DELETE FROM companies WHERE id=?", (cid,))
-        self.conn.commit()
-
-    def orders(self, company_id):
-        return self.conn.execute(
-            """SELECT * FROM orders
-               WHERE company_id=?
-               ORDER BY date DESC, rowid DESC""",
-            (company_id,),
-        ).fetchall()
-
-    def get_order(self, oid):
-        return self.conn.execute(
-            "SELECT * FROM orders WHERE id=?", (oid,)
-        ).fetchone()
-
-    def save_order(self, record):
-        now = today_shamsi()
-        exists = self.conn.execute(
-            "SELECT id FROM orders WHERE id=?", (record["id"],)
-        ).fetchone()
-
-        if exists:
-            self.conn.execute(
-                """UPDATE orders SET
-                   company_id=?, item=?, buy_price=?, sell_price=?,
-                   margin=?, settlement=?, qty=?, date=?, desc=?,
-                   updated_at=?
-                   WHERE id=?""",
-                (
-                    record["company_id"], record["item"],
-                    record["buy_price"], record["sell_price"],
-                    record["margin"], record["settlement"],
-                    record["qty"], record["date"], record["desc"],
-                    now, record["id"],
-                ),
-            )
-        else:
-            self.conn.execute(
-                """INSERT INTO orders
-                   (id,company_id,item,buy_price,sell_price,margin,
-                    settlement,qty,date,desc,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    record["id"], record["company_id"], record["item"],
-                    record["buy_price"], record["sell_price"],
-                    record["margin"], record["settlement"], record["qty"],
-                    record["date"], record["desc"], now, now,
-                ),
-            )
-        self.conn.commit()
-
-    def delete_order(self, oid):
-        self.conn.execute("DELETE FROM orders WHERE id=?", (oid,))
-        self.conn.commit()
-
-    def close(self):
-        self.conn.close()
+def format_price(value):
+    return f"{int(value):,} تومان" if value else "—"
 
 
 def main(page: ft.Page):
-    C = getattr(ft, "Colors", getattr(ft, "colors", None))
-    I = getattr(ft, "Icons", getattr(ft, "icons", None))
+    if jdatetime is None:
+        page.add(ft.Text("خطای راه اندازی: کتابخانه jdatetime نصب نیست.\n"
+                         "ابتدا اجرا کنید:  pip install jdatetime", color="red", rtl=False))
+        return
 
-    db = Database(DB_PATH)
+    today_shamsi = jdatetime.date.today().strftime("%Y/%m/%d")
 
-    page.title = APP_NAME
+    # ---------------- 1. تنظیمات ظاهری ----------------
+    page.title = "هایپر گوشت انصاری"
     page.theme_mode = ft.ThemeMode.LIGHT
-    page.bgcolor = C.BLUE_GREY_50
+    page.bgcolor = Colors.BLUE_GREY_50
     page.rtl = True
-    page.padding = 15
-    page.scroll = ft.ScrollMode.AUTO
     page.theme = ft.Theme(
-        text_theme=ft.TextTheme(body_medium=ft.TextStyle(size=16)),
-        color_scheme_seed=C.TEAL,
+        color_scheme_seed=Colors.TEAL,
+        text_theme=ft.TextTheme(body_medium=ft.TextStyle(size=18)),
     )
-
     page.appbar = ft.AppBar(
-        leading=ft.Icon(I.SHOPPING_CART_CHECKOUT, color="white"),
-        title=ft.Text(
-            "هایپر گوشت انصاری",
-            color="white",
-            weight=ft.FontWeight.BOLD,
-            size=22,
-        ),
-        bgcolor=C.TEAL_700,
-        center_title=True,
-        elevation=4,
+        leading=ft.Icon(Icons.SHOPPING_CART_CHECKOUT, color="white"),
+        title=ft.Text("هایپر گوشت انصاری", color="white",
+                      weight=ft.FontWeight.BOLD, size=22),
+        bgcolor=Colors.TEAL_700, center_title=True, elevation=4,
     )
 
-    snack_text = ft.Text("", size=15, color="white")
-    snack_bar = ft.SnackBar(
-        content=snack_text,
-        behavior=ft.SnackBarBehavior.FLOATING,
-        duration=3500,
-    )
-    page.overlay.append(snack_bar)
+    # ---------------- 2. پیام و دیالوگ تایید (تک نمونه) ----------------
+    snack_text = ft.Text("", size=16, color="white")
+    snack = ft.SnackBar(content=snack_text)
 
-    def show_message(message, is_error=True):
-        snack_text.value = message
-        snack_bar.bgcolor = C.RED_600 if is_error else C.GREEN_600
-        snack_bar.open = True
+    def show_message(text, error=True):
+        snack_text.value = text
+        snack.bgcolor = Colors.RED_600 if error else Colors.GREEN_600
+        snack.open = True
         page.update()
 
-    FIELD_STYLE = {
-        "border_radius": 10,
-        "filled": True,
-        "fill_color": C.WHITE,
-        "text_size": 17,
-        "border_color": C.TEAL_200,
-        "focused_border_color": C.TEAL_600,
-    }
+    confirm_pending = {"action": None}
+    confirm_title = ft.Text("", size=20, weight=ft.FontWeight.BOLD)
+    confirm_body = ft.Text("", size=16)
+    confirm_yes_label = ft.Text("حذف")
 
-    companies = list(db.companies())
+    def on_confirm_yes(e):
+        action = confirm_pending["action"]
+        confirm_pending["action"] = None   # جلوگیری از اجرای دوباره
+        confirm_dialog.open = False
+        page.update()
+        if action:
+            action()
 
-    company_dropdown = ft.Dropdown(
-        label="انتخاب شرکت",
-        options=[],
-        width=260,
-        border_radius=10,
-        filled=True,
-        fill_color=C.WHITE,
-        text_size=17,
+    def on_confirm_no(e):
+        confirm_pending["action"] = None
+        confirm_dialog.open = False
+        page.update()
+
+    confirm_dialog = ft.AlertDialog(
+        modal=True,
+        title=confirm_title,
+        content=confirm_body,
+        actions=[
+            ft.TextButton(content=confirm_yes_label, on_click=on_confirm_yes),
+            ft.TextButton("انصراف", on_click=on_confirm_no),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
     )
+    page.overlay.extend([snack, confirm_dialog])
 
-    def reload_companies():
-        nonlocal companies
-        companies = list(db.companies())
-        company_dropdown.options = [
-            ft.dropdown.Option(key=c["id"], text=c["name"])
-            for c in companies
-        ]
-        if companies:
-            if not company_dropdown.value or not any(
-                c["id"] == company_dropdown.value for c in companies
-            ):
-                company_dropdown.value = companies[0]["id"]
+    def ask_confirm(title, message, action, yes_label="حذف"):
+        confirm_title.value = title
+        confirm_body.value = message
+        confirm_yes_label.value = yes_label
+        confirm_pending["action"] = action
+        confirm_dialog.open = True
+        page.update()
+
+    def close_dialog(dlg):
+        dlg.open = False
+        page.update()
+
+    # ---------------- 3. ذخیره سازی و مهاجرت داده ----------------
+    companies = page.client_storage.get("companies") or []
+    orders = page.client_storage.get("orders") or []
+
+    def save_data():
+        page.client_storage.set("companies", companies)
+        page.client_storage.set("orders", orders)
+
+    def migrate_data():
+        changed = False
+        name_to_id = {}
+        if companies and isinstance(companies[0], str):      # فرمت قدیمی
+            old_names = list(companies)
+            companies.clear()
+            for name in old_names:
+                cid = str(uuid.uuid4())
+                companies.append({"id": cid, "name": name, "visitor": "", "phone": ""})
+                name_to_id[name] = cid
+            changed = True
         else:
-            company_dropdown.value = None
+            for c in companies:
+                if not isinstance(c, dict):
+                    continue
+                if "id" not in c:
+                    c["id"] = str(uuid.uuid4())
+                    changed = True
+                if c.get("name") and c["name"] not in name_to_id:
+                    name_to_id[c["name"]] = c["id"]
+                for k in ("visitor", "phone"):
+                    if k not in c:
+                        c[k] = ""
+                        changed = True
 
-    reload_companies()
+        for o in list(orders):
+            if not isinstance(o, dict):
+                orders.remove(o)
+                changed = True
+                continue
+            if "id" not in o:
+                o["id"] = str(uuid.uuid4())
+                changed = True
+            if "company_id" not in o:
+                o["company_id"] = name_to_id.get(o.get("company", ""), "")
+                changed = True
+            defaults = {"item": "", "buy_price": None, "sell_price": None,
+                        "margin": "", "settlement": "", "qty": 1,
+                        "date": today_shamsi, "desc": ""}
+            for k, v in defaults.items():
+                if k not in o:
+                    o[k] = v
+                    changed = True
+        if changed:
+            save_data()
 
-    txt_item_name = ft.TextField(label="نام کالا", **FIELD_STYLE)
-    txt_buy_price = ft.TextField(
-        label="قیمت خرید (تومان)",
-        keyboard_type=ft.KeyboardType.NUMBER,
-        **FIELD_STYLE,
-    )
-    txt_sell_price = ft.TextField(
-        label="قیمت مصرف (تومان)",
-        keyboard_type=ft.KeyboardType.NUMBER,
-        **FIELD_STYLE,
-    )
-    txt_margin = ft.TextField(
-        label="حاشیه سود (%)", read_only=True, **FIELD_STYLE
-    )
-    txt_settlement = ft.TextField(
-        label="مدت تسویه (روز)",
-        keyboard_type=ft.KeyboardType.NUMBER,
-        **FIELD_STYLE,
-    )
-    txt_qty = ft.TextField(
-        label="تعداد سفارش (کارتن)",
-        keyboard_type=ft.KeyboardType.NUMBER,
-        **FIELD_STYLE,
-    )
-    txt_date = ft.TextField(
-        label="تاریخ تحویل", value=today_shamsi(), **FIELD_STYLE
-    )
-    txt_desc = ft.TextField(
-        label="توضیحات",
-        multiline=True,
-        min_lines=2,
-        max_lines=4,
-        **FIELD_STYLE,
-    )
+    migrate_data()
 
-    def update_margin(_=None):
-        buy = parse_number(txt_buy_price.value)
-        sell = parse_number(txt_sell_price.value)
-        if buy is not None and buy > 0 and sell is not None:
+    # ---------------- 4. فیلدهای فرم کالا ----------------
+    field_style = {"border_radius": 10, "filled": True,
+                   "fill_color": Colors.WHITE, "text_size": 18}
+
+    txt_item_name  = ft.TextField(label="نام کالا", **field_style)
+    txt_buy_price  = ft.TextField(label="قیمت خرید (تومان)", keyboard_type=ft.KeyboardType.NUMBER, **field_style)
+    txt_sell_price = ft.TextField(label="قیمت مصرف (تومان)", keyboard_type=ft.KeyboardType.NUMBER, **field_style)
+    txt_margin     = ft.TextField(label="حاشیه سود (%)", read_only=True, **field_style)
+    txt_settlement = ft.TextField(label="مدت تسویه (روز)", keyboard_type=ft.KeyboardType.NUMBER, **field_style)
+    txt_qty        = ft.TextField(label="تعداد سفارش (کارتن)", keyboard_type=ft.KeyboardType.NUMBER, **field_style)
+    txt_date       = ft.TextField(label="تاریخ تحویل", value=today_shamsi, **field_style)
+    txt_desc       = ft.TextField(label="توضیحات", multiline=True, min_lines=2, max_lines=4, **field_style)
+
+    def recalc_margin():
+        buy = to_number(txt_buy_price.value)
+        sell = to_number(txt_sell_price.value)
+        if buy and buy > 0 and sell is not None:
             txt_margin.value = f"{((sell - buy) / buy) * 100:.1f}"
         else:
             txt_margin.value = ""
-        try:
-            txt_margin.update()
-        except Exception:
-            pass
 
-    def format_price_field(e):
-        ctrl = e.control
-        raw = (ctrl.value or "").replace(",", "").replace("،", "").strip()
+    def format_currency(e):
+        raw = normalize_digits(e.control.value).replace(",", "").strip()
         if raw.isdigit():
-            ctrl.value = f"{int(raw):,}"
-            ctrl.update()
-        update_margin()
+            e.control.value = f"{int(raw):,}"
+            e.control.update()
+        recalc_margin()
+        txt_margin.update()
 
-    txt_buy_price.on_change = format_price_field
-    txt_sell_price.on_change = format_price_field
+    txt_buy_price.on_change = format_currency
+    txt_sell_price.on_change = format_currency
 
-    txt_item_name.on_submit = lambda e: txt_buy_price.focus()
-    txt_buy_price.on_submit = lambda e: txt_sell_price.focus()
-    txt_sell_price.on_submit = lambda e: txt_settlement.focus()
-    txt_settlement.on_submit = lambda e: txt_qty.focus()
-    txt_qty.on_submit = lambda e: txt_date.focus()
-    txt_date.on_submit = lambda e: txt_desc.focus()
+    def chain(src, dst):
+        src.on_submit = lambda e: dst.focus()
 
-    txt_comp_name = ft.TextField(label="نام شرکت", **FIELD_STYLE)
-    txt_visitor = ft.TextField(label="نام ویزیتور", **FIELD_STYLE)
-    txt_phone = ft.TextField(
-        label="شماره تلفن",
-        keyboard_type=ft.KeyboardType.PHONE,
-        **FIELD_STYLE,
-    )
+    chain(txt_item_name, txt_buy_price)
+    chain(txt_buy_price, txt_sell_price)
+    chain(txt_sell_price, txt_settlement)
+    chain(txt_settlement, txt_qty)
+    chain(txt_qty, txt_date)
+    chain(txt_date, txt_desc)
 
-    orders_list = ft.Column(spacing=12, tight=True)
-
-    summary_count = ft.Text("0", size=16, weight=ft.FontWeight.BOLD)
-    summary_qty = ft.Text("0", size=16, weight=ft.FontWeight.BOLD)
-    summary_buy = ft.Text("—", size=13, weight=ft.FontWeight.BOLD)
-    summary_sell = ft.Text("—", size=13, weight=ft.FontWeight.BOLD)
-
-    def _stat(label, value_ctrl, icon, color):
-        return ft.Container(
-            padding=10,
-            border_radius=10,
-            bgcolor=C.WHITE,
-            expand=True,
-            content=ft.Column(
-                [
-                    ft.Row(
-                        [
-                            ft.Icon(icon, color=color, size=18),
-                            ft.Text(label, size=13, color=C.GREY_700),
-                        ],
-                        spacing=5,
-                        alignment=ft.MainAxisAlignment.CENTER,
-                    ),
-                    ft.Row(
-                        [value_ctrl],
-                        alignment=ft.MainAxisAlignment.CENTER,
-                    ),
-                ],
-                spacing=4,
-                tight=True,
-            ),
-        )
-
-    summary_row = ft.Row(
-        [
-            _stat("سفارش", summary_count, I.LIST_ALT, C.TEAL_600),
-            _stat("کارتن", summary_qty, I.INVENTORY_2, C.ORANGE_600),
-            _stat("خرید", summary_buy, I.PAYMENT, C.BLUE_600),
-            _stat("فروش", summary_sell, I.ATTACH_MONEY, C.GREEN_600),
-        ],
-        spacing=8,
-    )
-
-    def refresh_summary():
-        cid = company_dropdown.value
-        count = 0
-        total_qty = total_buy = total_sell = 0.0
-
-        if cid:
-            for o in db.orders(cid):
-                count += 1
-                q = float(o["qty"] or 0)
-                bp = float(o["buy_price"] or 0)
-                sp = float(o["sell_price"] or 0)
-                total_qty += q
-                total_buy += bp * q
-                total_sell += sp * q
-
-        summary_count.value = str(count)
-        summary_qty.value = f"{int(total_qty):,}" if total_qty else "0"
-        summary_buy.value = fmt_money(total_buy) if total_buy else "—"
-        summary_sell.value = fmt_money(total_sell) if total_sell else "—"
-
-    editing_id = {"value": None}
+    editing = {"id": None, "company_id": None}
 
     def clear_item_fields():
-        txt_item_name.value = ""
-        txt_buy_price.value = ""
-        txt_sell_price.value = ""
-        txt_margin.value = ""
-        txt_settlement.value = ""
-        txt_qty.value = ""
-        txt_date.value = today_shamsi()
-        txt_desc.value = ""
-        editing_id["value"] = None
+        for c in (txt_item_name, txt_buy_price, txt_sell_price, txt_margin,
+                  txt_settlement, txt_qty, txt_desc):
+            c.value = ""
+        txt_date.value = today_shamsi
+        editing["id"] = None
+        editing["company_id"] = None
         item_dialog.title.value = "ثبت کالای جدید"
-
-    def refresh_orders_list(_=None):
-        orders_list.controls.clear()
-        cid = company_dropdown.value
-
-        if not cid:
-            orders_list.controls.append(
-                ft.Container(
-                    padding=30,
-                    alignment=ft.alignment.center,
-                    content=ft.Column(
-                        [
-                            ft.Icon(
-                                I.BUSINESS_OUTLINED,
-                                size=60,
-                                color=C.GREY_400,
-                            ),
-                            ft.Text(
-                                "برای مشاهده سفارشات، یک شرکت انتخاب کنید.",
-                                color=C.GREY_600,
-                                size=15,
-                                text_align=ft.TextAlign.CENTER,
-                            ),
-                        ],
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        spacing=10,
-                    ),
-                )
-            )
-            refresh_summary()
-            page.update()
-            return
-
-        filtered = list(db.orders(cid))
-
-        if not filtered:
-            orders_list.controls.append(
-                ft.Container(
-                    padding=30,
-                    alignment=ft.alignment.center,
-                    content=ft.Column(
-                        [
-                            ft.Icon(
-                                I.INBOX_OUTLINED,
-                                size=60,
-                                color=C.GREY_400,
-                            ),
-                            ft.Text(
-                                "هنوز سفارشی برای این شرکت ثبت نشده است.",
-                                color=C.GREY_600,
-                                size=15,
-                            ),
-                        ],
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        spacing=10,
-                    ),
-                )
-            )
-        else:
-            for order in filtered:
-                parts = [f"تاریخ: {order['date']}"]
-                if order["buy_price"] is not None:
-                    parts.append(f"خرید: {fmt_money(order['buy_price'])}")
-                if order["sell_price"] is not None:
-                    parts.append(f"فروش: {fmt_money(order['sell_price'])}")
-                if order["margin"] is not None:
-                    parts.append(f"سود: {float(order['margin']):.1f}٪")
-                if order["settlement"] is not None:
-                    parts.append(f"تسویه: {order['settlement']} روز")
-
-                subtitle = "  |  ".join(parts)
-                if order["desc"]:
-                    subtitle += f"\n📝 {order['desc']}"
-
-                orders_list.controls.append(
-                    ft.Card(
-                        elevation=2,
-                        content=ft.Container(
-                            padding=12,
-                            content=ft.ListTile(
-                                leading=ft.Icon(
-                                    I.LOCAL_SHIPPING,
-                                    color=C.TEAL_500,
-                                    size=32,
-                                ),
-                                title=ft.Text(
-                                    f"{order['item']} — {order['qty']} کارتن",
-                                    size=17,
-                                    weight=ft.FontWeight.BOLD,
-                                ),
-                                subtitle=ft.Text(
-                                    subtitle,
-                                    size=14,
-                                    color=C.GREY_700,
-                                ),
-                                trailing=ft.Row(
-                                    [
-                                        ft.IconButton(
-                                            I.EDIT_OUTLINED,
-                                            tooltip="ویرایش",
-                                            icon_color=C.TEAL_700,
-                                            on_click=lambda e, oid=order["id"]:
-                                                open_edit_item(oid),
-                                        ),
-                                        ft.IconButton(
-                                            I.DELETE_OUTLINE,
-                                            tooltip="حذف",
-                                            icon_color=C.RED_500,
-                                            on_click=lambda e, oid=order["id"]:
-                                                ask_delete_order(oid),
-                                        ),
-                                    ],
-                                    tight=True,
-                                    spacing=0,
-                                ),
-                            ),
-                        ),
-                    )
-                )
-
-        refresh_summary()
-        page.update()
-
-    company_dropdown.on_change = refresh_orders_list
-
-    def close_item_dlg(e=None):
-        item_dialog.open = False
-        page.update()
 
     def save_item(e):
         try:
-            cid = company_dropdown.value
-            if not cid:
-                show_message("ابتدا یک شرکت انتخاب کنید!")
+            company_id = editing["company_id"] or company_dropdown.value
+            if not company_id:
+                show_message("لطفا ابتدا یک شرکت را انتخاب کنید!")
                 return
-
-            name = (txt_item_name.value or "").strip()
-            if not name:
+            item = (txt_item_name.value or "").strip()
+            if not item:
                 show_message("نام کالا الزامی است!")
                 return
-
-            qty = parse_number(txt_qty.value)
+            qty = to_number(txt_qty.value)
             if qty is None or qty <= 0:
-                show_message("تعداد سفارش باید عددی مثبت باشد!")
+                show_message("تعداد سفارش باید عدد بزرگ تر از صفر باشد!")
+                return
+            buy = to_number(txt_buy_price.value)
+            sell = to_number(txt_sell_price.value)
+            settlement = to_number(txt_settlement.value)
+            if (txt_buy_price.value or "").strip() and buy is None:
+                show_message("قیمت خرید نامعتبر است!")
+                return
+            if (txt_sell_price.value or "").strip() and sell is None:
+                show_message("قیمت مصرف نامعتبر است!")
+                return
+            if (txt_settlement.value or "").strip() and settlement is None:
+                show_message("مدت تسویه باید عدد معتبر باشد!")
                 return
 
-            settlement_raw = (txt_settlement.value or "").strip()
-            settlement = None
-            if settlement_raw:
-                settlement = parse_number(settlement_raw)
-                if settlement is None or settlement < 0:
-                    show_message("مدت تسویه باید عددی معتبر باشد!")
-                    return
-                settlement = int(settlement)
-
-            bp = parse_number(txt_buy_price.value)
-            sp = parse_number(txt_sell_price.value)
-
-            margin = None
-            if bp is not None and bp > 0 and sp is not None:
-                margin = round(((sp - bp) / bp) * 100, 2)
-
             record = {
-                "id": editing_id["value"] or str(uuid.uuid4()),
-                "company_id": cid,
-                "item": name,
-                "buy_price": bp,
-                "sell_price": sp,
-                "margin": margin,
-                "settlement": settlement,
+                "id": editing["id"] or str(uuid.uuid4()),
+                "company_id": company_id,
+                "item": item,
+                "buy_price": buy,
+                "sell_price": sell,
+                "margin": txt_margin.value,
+                "settlement": f"{int(settlement)}" if settlement is not None else "",
                 "qty": qty,
-                "date": (txt_date.value or "").strip() or today_shamsi(),
+                "date": (txt_date.value or "").strip() or today_shamsi,
                 "desc": (txt_desc.value or "").strip(),
             }
-
-            db.save_order(record)
+            if editing["id"]:
+                for i, o in enumerate(orders):
+                    if o["id"] == editing["id"]:
+                        orders[i] = record
+                        break
+            else:
+                orders.append(record)
+            save_data()
             clear_item_fields()
-            close_item_dlg()
+            close_dialog(item_dialog)
             refresh_orders_list()
-            show_message("سفارش با موفقیت ذخیره شد.", is_error=False)
-
+            show_message("سفارش با موفقیت ثبت شد.", error=False)
         except Exception:
-            show_message(f"خطا: {traceback.format_exc()[-300:]}")
+            show_message(f"خطا: {traceback.format_exc()[-200:]}")
 
     item_dialog = ft.AlertDialog(
         modal=True,
-        title=ft.Text(
-            "ثبت کالای جدید",
-            size=20,
-            weight=ft.FontWeight.BOLD,
-            color=C.TEAL_800,
-        ),
+        title=ft.Text("ثبت کالای جدید", size=22, weight=ft.FontWeight.BOLD, color=Colors.TEAL_800),
         content=ft.Column(
-            [
-                txt_item_name,
-                txt_buy_price,
-                txt_sell_price,
-                txt_margin,
-                txt_settlement,
-                txt_qty,
-                txt_date,
-                txt_desc,
-            ],
-            scroll=ft.ScrollMode.AUTO,
-            height=450,
-            tight=True,
-            spacing=10,
+            [txt_item_name, txt_buy_price, txt_sell_price, txt_margin,
+             txt_settlement, txt_qty, txt_date, txt_desc],
+            scroll=ft.ScrollMode.AUTO, height=470, tight=True, width=400,
         ),
         actions=[
-            ft.ElevatedButton(
-                "ثبت کالا",
-                on_click=save_item,
-                bgcolor=C.GREEN_600,
-                color="white",
-            ),
-            ft.TextButton("انصراف", on_click=close_item_dlg),
+            ft.ElevatedButton("ثبت کالا", on_click=save_item,
+                              bgcolor=Colors.GREEN_600, color="white"),
+            ft.TextButton("انصراف", on_click=lambda e: close_dialog(item_dialog)),
         ],
     )
     page.overlay.append(item_dialog)
 
     def open_add_item(e):
         if not company_dropdown.value:
-            show_message("ابتدا یک شرکت انتخاب کنید!")
+            show_message("لطفا ابتدا یک شرکت را انتخاب کنید!")
             return
         clear_item_fields()
         item_dialog.open = True
         page.update()
         txt_item_name.focus()
 
-    def open_edit_item(order_id):
-        order = db.get_order(order_id)
-        if not order:
-            show_message("سفارش پیدا نشد!")
-            return
-
-        editing_id["value"] = order["id"]
+    def open_edit_item(o):
+        editing["id"] = o["id"]
+        editing["company_id"] = o.get("company_id")   # قفل بودن شرکت هنگام ویرایش
         item_dialog.title.value = "ویرایش کالا"
-        txt_item_name.value = order["item"]
-        txt_buy_price.value = (
-            f"{int(order['buy_price']):,}"
-            if order["buy_price"] is not None else ""
-        )
-        txt_sell_price.value = (
-            f"{int(order['sell_price']):,}"
-            if order["sell_price"] is not None else ""
-        )
-        txt_margin.value = (
-            f"{float(order['margin']):.1f}"
-            if order["margin"] is not None else ""
-        )
-        txt_settlement.value = (
-            str(order["settlement"])
-            if order["settlement"] is not None else ""
-        )
-        txt_qty.value = str(order["qty"])
-        txt_date.value = order["date"] or today_shamsi()
-        txt_desc.value = order["desc"] or ""
+        txt_item_name.value = o.get("item", "")
+        txt_buy_price.value = money(o.get("buy_price"))
+        txt_sell_price.value = money(o.get("sell_price"))
+        recalc_margin()
+        txt_margin.value = o.get("margin", "")
+        txt_settlement.value = str(o.get("settlement") or "")
+        txt_qty.value = qty_text(o.get("qty"))
+        txt_date.value = o.get("date", today_shamsi)
+        txt_desc.value = o.get("desc", "")
         item_dialog.open = True
         page.update()
 
-    confirm_dialog = ft.AlertDialog(modal=True)
-    page.overlay.append(confirm_dialog)
+    # ---------------- 5. فرم شرکت ----------------
+    txt_comp_name = ft.TextField(label="نام شرکت", **field_style)
+    txt_visitor   = ft.TextField(label="نام ویزیتور", **field_style)
+    txt_phone     = ft.TextField(label="شماره تلفن", keyboard_type=ft.KeyboardType.PHONE, **field_style)
 
-    def close_confirm():
-        confirm_dialog.open = False
-        page.update()
+    def get_company(cid):
+        for c in companies:
+            if c["id"] == cid:
+                return c
+        return None
 
-    def ask_delete_order(order_id):
-        def do_delete(e):
-            try:
-                db.delete_order(order_id)
-                close_confirm()
-                refresh_orders_list()
-                show_message("سفارش حذف شد.", is_error=False)
-            except Exception:
-                show_message(f"خطا: {traceback.format_exc()[-300:]}")
-
-        confirm_dialog.title = ft.Text("حذف سفارش")
-        confirm_dialog.content = ft.Text("آیا از حذف این سفارش مطمئن هستید؟")
-        confirm_dialog.actions = [
-            ft.TextButton(
-                "حذف",
-                on_click=do_delete,
-                style=ft.ButtonStyle(color=C.RED_600),
-            ),
-            ft.TextButton("انصراف", on_click=lambda e: close_confirm()),
-        ]
-        confirm_dialog.open = True
-        page.update()
-
-    def clear_comp_fields():
-        txt_comp_name.value = ""
-        txt_visitor.value = ""
-        txt_phone.value = ""
-
-    def close_comp_dlg(e=None):
-        comp_dialog.open = False
-        page.update()
+    def rebuild_dropdown(select_id=None):
+        company_dropdown.options = [option(c["id"], c["name"]) for c in companies]
+        ids = [c["id"] for c in companies]
+        if select_id and select_id in ids:
+            company_dropdown.value = select_id
+        elif company_dropdown.value not in ids:
+            company_dropdown.value = None
 
     def save_company(e):
         try:
             name = (txt_comp_name.value or "").strip()
-            visitor = (txt_visitor.value or "").strip()
-            phone = (txt_phone.value or "").strip()
-
             if not name:
                 show_message("نام شرکت الزامی است!")
                 return
-
             if any(c["name"] == name for c in companies):
-                show_message("این شرکت قبلاً ثبت شده است!")
+                show_message("این شرکت قبلا ثبت شده است!")
                 return
-
-            cid = db.add_company(name, visitor, phone)
-            clear_comp_fields()
-            close_comp_dlg()
-            reload_companies()
-            company_dropdown.value = cid
+            comp = {"id": str(uuid.uuid4()), "name": name,
+                    "visitor": (txt_visitor.value or "").strip(),
+                    "phone": normalize_digits(txt_phone.value or "").strip()}
+            companies.append(comp)
+            rebuild_dropdown(select_id=comp["id"])
+            save_data()
+            txt_comp_name.value = txt_visitor.value = txt_phone.value = ""
+            close_dialog(comp_dialog)
             refresh_orders_list()
-            show_message("شرکت با موفقیت ثبت شد.", is_error=False)
-
-        except sqlite3.IntegrityError:
-            show_message("این شرکت قبلاً ثبت شده است!")
+            show_message(f"شرکت «{name}» ثبت شد.", error=False)
         except Exception:
-            show_message(f"خطا: {traceback.format_exc()[-300:]}")
+            show_message(f"خطا: {traceback.format_exc()[-200:]}")
 
     comp_dialog = ft.AlertDialog(
         modal=True,
-        title=ft.Text(
-            "افزودن شرکت تأمین‌کننده",
-            size=20,
-            weight=ft.FontWeight.BOLD,
-            color=C.TEAL_800,
-        ),
-        content=ft.Column(
-            [txt_comp_name, txt_visitor, txt_phone],
-            tight=True,
-            spacing=10,
-            height=230,
-        ),
+        title=ft.Text("افزودن شرکت تامین کننده", size=22,
+                      weight=ft.FontWeight.BOLD, color=Colors.TEAL_800),
+        content=ft.Column([txt_comp_name, txt_visitor, txt_phone], height=250, tight=True, width=400),
         actions=[
-            ft.ElevatedButton(
-                "ثبت شرکت",
-                on_click=save_company,
-                bgcolor=C.TEAL_600,
-                color="white",
-            ),
-            ft.TextButton("انصراف", on_click=close_comp_dlg),
+            ft.ElevatedButton("ثبت شرکت", on_click=save_company,
+                              bgcolor=Colors.TEAL_600, color="white"),
+            ft.TextButton("انصراف", on_click=lambda e: close_dialog(comp_dialog)),
         ],
     )
     page.overlay.append(comp_dialog)
 
-    def open_add_company(e):
-        clear_comp_fields()
-        comp_dialog.open = True
-        page.update()
-        txt_comp_name.focus()
-
     def delete_company(e):
         cid = company_dropdown.value
-        if not cid:
-            show_message("ابتدا یک شرکت انتخاب کنید!")
+        comp = get_company(cid) if cid else None
+        if not comp:
+            show_message("ابتدا یک شرکت را انتخاب کنید!")
             return
+        def do_delete():
+            companies.remove(comp)
+            orders[:] = [o for o in orders if o.get("company_id") != cid]
+            rebuild_dropdown()
+            save_data()
+            refresh_orders_list()
+        n = sum(1 for o in orders if o.get("company_id") == cid)
+        ask_confirm("حذف شرکت",
+                    f'آیا از حذف شرکت «{comp["name"]}» و {n} سفارش آن مطمئن هستید؟',
+                    do_delete)
 
-        company = next((c for c in companies if c["id"] == cid), None)
-        if not company:
-            return
-
-        def do_delete(e):
-            try:
-                db.delete_company(cid)
-                close_confirm()
-                reload_companies()
-                refresh_orders_list()
-                show_message(
-                    "شرکت و سفارشات آن حذف شد.",
-                    is_error=False,
-                )
-            except Exception:
-                show_message(f"خطا: {traceback.format_exc()[-300:]}")
-
-        confirm_dialog.title = ft.Text("حذف شرکت")
-        confirm_dialog.content = ft.Text(
-            f"شرکت «{company['name']}» و تمام سفارش‌های آن حذف شود؟"
-        )
-        confirm_dialog.actions = [
-            ft.TextButton(
-                "حذف",
-                on_click=do_delete,
-                style=ft.ButtonStyle(color=C.RED_600),
-            ),
-            ft.TextButton("انصراف", on_click=lambda e: close_confirm()),
-        ]
-        confirm_dialog.open = True
-        page.update()
-
-    page.add(
-        ft.Column(
-            [
-                ft.Row(
-                    [
-                        company_dropdown,
-                        ft.ElevatedButton(
-                            "افزودن شرکت",
-                            icon=I.ADD_BUSINESS,
-                            on_click=open_add_company,
-                            bgcolor=C.TEAL_600,
-                            color="white",
-                        ),
-                        ft.OutlinedButton(
-                            "حذف شرکت",
-                            icon=I.DELETE_OUTLINE,
-                            on_click=delete_company,
-                            style=ft.ButtonStyle(color=C.RED_600),
-                        ),
-                    ],
-                    wrap=True,
-                    spacing=8,
-                ),
-                ft.Divider(height=8),
-                summary_row,
-                ft.Container(height=5),
-                ft.ElevatedButton(
-                    "ثبت سفارش جدید",
-                    icon=I.ADD_SHOPPING_CART,
-                    on_click=open_add_item,
-                    bgcolor=C.GREEN_600,
-                    color="white",
-                ),
-                ft.Text(
-                    "فهرست سفارشات",
-                    size=20,
-                    weight=ft.FontWeight.BOLD,
-                    color=C.TEAL_800,
-                ),
-                orders_list,
-            ],
-            spacing=12,
-        )
+    # ---------------- 6. دراپ داون و لیست سفارشات ----------------
+    company_dropdown = ft.Dropdown(
+        label="انتخاب شرکت", width=250, border_radius=10, filled=True,
+        fill_color=Colors.WHITE, text_size=18,
+        on_change=lambda e: refresh_orders_list(),
     )
 
+    search_box = ft.TextField(
+        label="جستجو در سفارشات...", prefix_icon=Icons.SEARCH,
+        border_radius=10, filled=True, fill_color=Colors.WHITE, text_size=16,
+        width=240, on_change=lambda e: refresh_orders_list(),
+    )
+
+    orders_list = ft.ListView(expand=True, spacing=15, padding=10)
+    orders_screenshot = ft.Screenshot(content=orders_list) if HAS_SCREENSHOT else orders_list
+
+    empty_state = ft.Container(
+        visible=False, alignment=ft.alignment.center,
+        content=ft.Column([
+            ft.Icon(Icons.INBOX_OUTLINED, size=70, color=Colors.GREY_400),
+            ft.Text("سفارشی یافت نشد", size=18, color=Colors.GREY_500),
+        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
+    )
+
+    totals_text = ft.Text("", size=16, weight=ft.FontWeight.BOLD, color=Colors.TEAL_900)
+
+    def delete_order(oid):
+        def do_delete():
+            orders[:] = [o for o in orders if o["id"] != oid]
+            save_data()
+            refresh_orders_list()
+        ask_confirm("حذف سفارش", "آیا از حذف این سفارش مطمئن هستید؟", do_delete)
+
+    def build_card(o):
+        parts = [f"تاریخ تحویل: {o.get('date', '')}"]
+        if o.get("buy_price"):
+            parts.append(f"خرید: {format_price(o['buy_price'])}")
+        if o.get("sell_price"):
+            parts.append(f"فروش: {format_price(o['sell_price'])}")
+        if o.get("margin"):
+            parts.append(f"سود: {o['margin']}٪")
+        if o.get("settlement"):
+            parts.append(f"تسویه: {o['settlement']} روز")
+        subtitle = "  |  ".join(parts)
+        if o.get("desc"):
+            subtitle += f"\n{o['desc']}"
+        return ft.Card(
+            elevation=3, surface_tint_color=Colors.WHITE,
+            content=ft.Container(
+                padding=15,
+                content=ft.ListTile(
+                    leading=ft.Icon(Icons.LOCAL_SHIPPING, color=Colors.TEAL_500, size=35),
+                    title=ft.Text(f"{o.get('item', '')} - {qty_text(o.get('qty'))} کارتن",
+                                  size=20, weight=ft.FontWeight.BOLD),
+                    subtitle=ft.Text(subtitle, size=15, color=Colors.GREY_700),
+                    trailing=ft.Row([
+                        ft.IconButton(Icons.EDIT_OUTLINED, tooltip="ویرایش",
+                                      icon_color=Colors.TEAL_700,
+                                      on_click=lambda e, x=o: open_edit_item(x)),
+                        ft.IconButton(Icons.DELETE_OUTLINE, tooltip="حذف",
+                                      icon_color=Colors.RED_500,
+                                      on_click=lambda e, oid=o["id"]: delete_order(oid)),
+                    ], tight=True),
+                ),
+            ),
+        )
+
+    def refresh_orders_list():
+        orders_list.controls.clear()
+        selected = company_dropdown.value
+        query = normalize_digits(search_box.value or "").strip().lower()
+        shown, total_qty = 0, 0.0
+        for o in orders:
+            if o.get("company_id") != selected:
+                continue
+            if query and query not in (o.get("item") or "").lower() \
+                     and query not in (o.get("desc") or "").lower():
+                continue
+            shown += 1
+            total_qty += to_number(str(o.get("qty"))) or 0
+            orders_list.controls.append(build_card(o))
+        empty_state.visible = shown == 0
+        totals_text.value = f"تعداد اقلام: {shown}    |    مجموع: {total_qty:g} کارتن"
+        page.update()
+
+    # ---------------- 7. اسکرین شات از لیست ----------------
+    async def take_list_screenshot(e):
+        if not HAS_SCREENSHOT:
+            show_message("این قابلیت نیاز به بروزرسانی flet دارد (pip install -U flet)")
+            return
+        if not orders_list.controls:
+            show_message("سفارشی برای عکس گرفتن وجود ندارد!")
+            return
+        try:
+            # موقتا ارتفاع لیست را به اندازه کل محتوا می بریم تا همه کارت ها رندر شوند
+            old_height = orders_list.height
+            orders_list.height = max(len(orders_list.controls) * 195 + 40, 300)
+            orders_list.update()
+            await asyncio.sleep(0.4)          # فرصت رندر یک فریم
+            image_bytes = await orders_screenshot.capture()
+            orders_list.height = old_height
+            orders_list.update()
+            base = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
+            folder = os.path.join(base, "screenshots")
+            os.makedirs(folder, exist_ok=True)
+            fname = f"orders_{jdatetime.date.today().strftime('%Y%m%d')}_{uuid.uuid4().hex[:6]}.png"
+            path = os.path.join(folder, fname)
+            with open(path, "wb") as f:
+                f.write(image_bytes)
+            show_message(f"عکس ذخیره شد:\n{path}", error=False)
+        except Exception:
+            orders_list.height = None
+            show_message(f"خطا در گرفتن عکس: {traceback.format_exc()[-200:]}")
+
+    # ---------------- 8. چیدمان صفحه ----------------
+    page.add(
+        ft.Container(height=8),
+        ft.Row([
+            company_dropdown,
+            ft.IconButton(Icons.ADD_BUSINESS, on_click=lambda e: open_dialog(comp_dialog),
+                          tooltip="افزودن شرکت", icon_size=32, icon_color=Colors.TEAL_700),
+            ft.IconButton(Icons.DELETE_FOREVER_OUTLINED, on_click=delete_company,
+                          tooltip="حذف شرکت", icon_size=32, icon_color=Colors.RED_400),
+        ], alignment=ft.MainAxisAlignment.CENTER),
+        ft.Container(height=8),
+        ft.Row([
+            ft.ElevatedButton("ثبت کالای جدید", on_click=open_add_item, icon=Icons.ADD_SHOPPING_CART,
+                              width=250, height=55, bgcolor=Colors.ORANGE_600, color="white", elevation=5),
+            ft.IconButton(Icons.CAMERA_ALT_OUTLINED, on_click=take_list_screenshot,
+                          tooltip="گرفتن عکس از لیست", icon_size=32, icon_color=Colors.TEAL_700),
+            search_box,
+        ], alignment=ft.MainAxisAlignment.CENTER, wrap=True, spacing=12),
+        ft.Divider(height=25, color=Colors.GREY_300),
+        ft.Row([
+            ft.Icon(Icons.LIST_ALT, color=Colors.TEAL_800),
+            ft.Text("لیست سفارشات ثبت شده:", size=20,
+                    weight=ft.FontWeight.BOLD, color=Colors.TEAL_800),
+            ft.Container(expand=True),
+            totals_text,
+        ]),
+        ft.Stack([
+            ft.Container(content=orders_screenshot, expand=True),
+            empty_state,
+        ], expand=True),
+    )
+
+    def open_dialog(dlg):
+        dlg.open = True
+        page.update()
+
+    rebuild_dropdown()
     refresh_orders_list()
 
 
-if __name__ == "__main__":
-    ft.app(target=main)
+ft.app(target=main)
