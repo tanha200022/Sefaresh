@@ -1,6 +1,8 @@
 """
-سفارشات انصاری — نسخهٔ کامل اصلاح‌شده
+سفارشات انصاری — با خروجی عکس
 """
+import base64
+import io
 import os
 import tempfile
 import traceback
@@ -15,7 +17,14 @@ except Exception:
     jdatetime = None
     JDATETIME_OK = False
 
-# --- سازگاری با Flet جدید/قدیم ---
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+    PIL_OK = True
+except Exception:
+    PIL_OK = False
+
 try:
     C = ft.Colors
     I = ft.Icons
@@ -52,12 +61,161 @@ def fmt_money(value) -> str:
         return "—"
 
 
+def find_persian_font():
+    """پیدا کردن یک فونت فارسی روی سیستم/اندروید."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(here, "Vazirmatn-Regular.ttf"),
+        os.path.join(here, "Vazir.ttf"),
+        os.path.join(here, "font.ttf"),
+        os.path.join(here, "assets", "Vazirmatn-Regular.ttf"),
+        # اندروید
+        "/system/fonts/NotoNaskhArabic-Regular.ttf",
+        "/system/fonts/NotoNaskhArabicUI-Regular.ttf",
+        "/system/fonts/NotoSansArabic-Regular.ttf",
+        "/system/fonts/DroidNaskh-Regular.ttf",
+        "/system/fonts/DroidSansFallback.ttf",
+        # لینوکس
+        "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        # ویندوز
+        "C:/Windows/Fonts/tahoma.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def render_orders_image(company, order_list):
+    """ساخت عکس PNG از لیست سفارشات. bytes برمی‌گرداند."""
+    if not PIL_OK:
+        raise RuntimeError("Pillow / arabic-reshaper نصب نیست")
+
+    font_path = find_persian_font()
+    if not font_path:
+        raise RuntimeError("فونت فارسی روی دستگاه پیدا نشد")
+
+    def R(text):
+        if not text:
+            return ""
+        try:
+            return get_display(arabic_reshaper.reshape(str(text)))
+        except Exception:
+            return str(text)
+
+    TEAL = (0, 105, 92)
+    TEAL_LIGHT = (178, 223, 219)
+    WHITE = (255, 255, 255)
+    OFF_WHITE = (245, 247, 250)
+    GREY = (97, 97, 97)
+    DARK = (33, 33, 33)
+
+    W = 1080
+    PAD = 40
+    row_h = 190
+    header_h = 280
+    footer_h = 260
+    H = header_h + row_h * len(order_list) + footer_h
+
+    img = Image.new("RGB", (W, H), OFF_WHITE)
+    draw = ImageDraw.Draw(img)
+
+    f_title = ImageFont.truetype(font_path, 60)
+    f_h2 = ImageFont.truetype(font_path, 42)
+    f_body = ImageFont.truetype(font_path, 34)
+    f_small = ImageFont.truetype(font_path, 28)
+    f_money = ImageFont.truetype(font_path, 32)
+
+    # --- هدر ---
+    draw.rectangle([0, 0, W, header_h], fill=TEAL)
+    draw.text((W // 2, 70), R("هایپر گوشت انصاری"),
+              font=f_title, fill=WHITE, anchor="mm")
+    draw.text((W // 2, 160), R(f"گزارش سفارشات: {company['name']}"),
+              font=f_h2, fill=WHITE, anchor="mm")
+    draw.text((W // 2, 230), R(f"تاریخ گزارش: {today_shamsi()}"),
+              font=f_small, fill=TEAL_LIGHT, anchor="mm")
+
+    # --- ردیف‌ها ---
+    y = header_h + 20
+    for i, o in enumerate(order_list):
+        bg = WHITE if i % 2 == 0 else OFF_WHITE
+        draw.rectangle([PAD, y, W - PAD, y + row_h - 20],
+                       fill=bg, outline=TEAL_LIGHT, width=2)
+
+        # خط تزئینی کنار
+        draw.rectangle([W - PAD - 8, y, W - PAD, y + row_h - 20], fill=TEAL)
+
+        # عنوان کالا
+        title = R(f"{o.get('item','')} — {o.get('qty','')} کارتن")
+        draw.text((W - PAD - 30, y + 20), title,
+                  font=f_h2, fill=TEAL, anchor="ra")
+
+        # خط اطلاعات ۱: تاریخ و تسویه
+        p1 = []
+        if o.get("date"):
+            p1.append(f"تحویل: {o['date']}")
+        if o.get("settlement"):
+            p1.append(f"تسویه: {o['settlement']} روز")
+        if p1:
+            draw.text((W - PAD - 30, y + 85), R("   |   ".join(p1)),
+                      font=f_body, fill=GREY, anchor="ra")
+
+        # خط اطلاعات ۲: قیمت‌ها
+        p2 = []
+        if o.get("buy_price"):
+            p2.append(f"خرید: {fmt_money(o['buy_price'])}")
+        if o.get("sell_price"):
+            p2.append(f"فروش: {fmt_money(o['sell_price'])}")
+        if o.get("margin"):
+            p2.append(f"سود: {o['margin']}٪")
+        if p2:
+            draw.text((W - PAD - 30, y + 135), R("   |   ".join(p2)),
+                      font=f_money, fill=DARK, anchor="ra")
+
+        y += row_h
+
+    # --- خلاصه ---
+    y += 20
+    box_h = footer_h - 60
+    draw.rectangle([PAD, y, W - PAD, y + box_h],
+                   fill=TEAL_LIGHT, outline=TEAL, width=3)
+
+    total_qty = 0.0
+    total_buy = 0.0
+    total_sell = 0.0
+    for o in order_list:
+        q = parse_number(o.get("qty")) or 0
+        bp = parse_number(o.get("buy_price")) or 0
+        sp = parse_number(o.get("sell_price")) or 0
+        total_qty += q
+        total_buy += bp * q
+        total_sell += sp * q
+
+    draw.text((W - PAD - 30, y + 25), R("خلاصهٔ کل:"),
+              font=f_h2, fill=TEAL, anchor="ra")
+    draw.text((W - PAD - 30, y + 85),
+              R(f"تعداد سفارش: {len(order_list)}   |   مجموع کارتن: {int(total_qty):,}"),
+              font=f_body, fill=DARK, anchor="ra")
+    draw.text((W - PAD - 30, y + 135),
+              R(f"مجموع خرید: {fmt_money(total_buy)}"),
+              font=f_body, fill=DARK, anchor="ra")
+    draw.text((W - PAD - 30, y + 180),
+              R(f"مجموع فروش: {fmt_money(total_sell)}"),
+              font=f_body, fill=DARK, anchor="ra")
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
 # ---------- برنامهٔ اصلی ----------
 def main(page: ft.Page):
     if not JDATETIME_OK:
         page.add(ft.Text(
             "کتابخانه jdatetime نصب نیست.\n"
-            "با دستور زیر نصب کنید:  pip install jdatetime",
+            "دستور: pip install jdatetime",
             color="red", rtl=False,
         ))
         return
@@ -132,7 +290,7 @@ def main(page: ft.Page):
     snack_bar = ft.SnackBar(
         content=snack_text,
         behavior=ft.SnackBarBehavior.FLOATING,
-        duration=3000,
+        duration=3500,
     )
     page.overlay.append(snack_bar)
 
@@ -181,7 +339,7 @@ def main(page: ft.Page):
         confirm_dialog.open = True
         page.update()
 
-    # ===== استایل فیلدها =====
+    # ===== استایل =====
     FIELD_STYLE = {
         "border_radius": 10, "filled": True,
         "fill_color": C.WHITE, "text_size": 17,
@@ -208,36 +366,25 @@ def main(page: ft.Page):
     if companies:
         company_dropdown.value = companies[0]["id"]
 
-    # ===== فیلدهای کالا (با کیبورد عددی) =====
+    # ===== فیلدهای کالا (کیبورد عددی) =====
     txt_item_name = ft.TextField(label="نام کالا", **FIELD_STYLE)
-
     txt_buy_price = ft.TextField(
         label="قیمت خرید (تومان)",
-        keyboard_type=ft.KeyboardType.NUMBER,
-        **FIELD_STYLE,
-    )
+        keyboard_type=ft.KeyboardType.NUMBER, **FIELD_STYLE)
     txt_sell_price = ft.TextField(
         label="قیمت مصرف (تومان)",
-        keyboard_type=ft.KeyboardType.NUMBER,
-        **FIELD_STYLE,
-    )
+        keyboard_type=ft.KeyboardType.NUMBER, **FIELD_STYLE)
     txt_margin = ft.TextField(label="حاشیه سود (%)", read_only=True, **FIELD_STYLE)
     txt_settlement = ft.TextField(
         label="مدت تسویه (روز)",
-        keyboard_type=ft.KeyboardType.NUMBER,
-        **FIELD_STYLE,
-    )
+        keyboard_type=ft.KeyboardType.NUMBER, **FIELD_STYLE)
     txt_qty = ft.TextField(
         label="تعداد سفارش (کارتن)",
-        keyboard_type=ft.KeyboardType.NUMBER,
-        **FIELD_STYLE,
-    )
+        keyboard_type=ft.KeyboardType.NUMBER, **FIELD_STYLE)
     txt_date = ft.TextField(label="تاریخ تحویل", value=today_shamsi(), **FIELD_STYLE)
     txt_desc = ft.TextField(
         label="توضیحات",
-        multiline=True, min_lines=2, max_lines=4,
-        **FIELD_STYLE,
-    )
+        multiline=True, min_lines=2, max_lines=4, **FIELD_STYLE)
 
     def update_margin(_=None):
         buy = parse_number(txt_buy_price.value)
@@ -265,7 +412,6 @@ def main(page: ft.Page):
     txt_buy_price.on_change = format_price_field
     txt_sell_price.on_change = format_price_field
 
-    # زنجیرهٔ Tab
     txt_item_name.on_submit = lambda e: txt_buy_price.focus()
     txt_buy_price.on_submit = lambda e: txt_sell_price.focus()
     txt_sell_price.on_submit = lambda e: txt_settlement.focus()
@@ -278,14 +424,12 @@ def main(page: ft.Page):
     txt_visitor = ft.TextField(label="نام ویزیتور", **FIELD_STYLE)
     txt_phone = ft.TextField(
         label="شماره تلفن",
-        keyboard_type=ft.KeyboardType.PHONE,
-        **FIELD_STYLE,
-    )
+        keyboard_type=ft.KeyboardType.PHONE, **FIELD_STYLE)
 
     # ===== لیست سفارشات =====
     orders_list = ft.Column(spacing=12, tight=True)
 
-    # ===== کارت خلاصهٔ آماری =====
+    # ===== خلاصه =====
     summary_count = ft.Text("0", size=16, weight=ft.FontWeight.BOLD)
     summary_qty = ft.Text("0", size=16, weight=ft.FontWeight.BOLD)
     summary_buy = ft.Text("—", size=13, weight=ft.FontWeight.BOLD)
@@ -392,8 +536,7 @@ def main(page: ft.Page):
                             leading=ft.Icon(I.LOCAL_SHIPPING, color=C.TEAL_500, size=32),
                             title=ft.Text(
                                 f"{ord.get('item', '')} — {ord.get('qty', '')} کارتن",
-                                size=17, weight=ft.FontWeight.BOLD,
-                            ),
+                                size=17, weight=ft.FontWeight.BOLD),
                             subtitle=ft.Text(subtitle, size=14, color=C.GREY_700),
                             trailing=ft.Row([
                                 ft.IconButton(I.EDIT_OUTLINED, tooltip="ویرایش",
@@ -444,15 +587,10 @@ def main(page: ft.Page):
                 show_message("تعداد سفارش باید عددی مثبت باشد!"); return
             bp = parse_number(txt_buy_price.value)
             sp = parse_number(txt_sell_price.value)
-            if (txt_buy_price.value or "").strip() and bp is None:
-                show_message("قیمت خرید نامعتبر است!"); return
-            if (txt_sell_price.value or "").strip() and sp is None:
-                show_message("قیمت مصرف نامعتبر است!"); return
 
             record = {
                 "id": editing_id["value"] or str(uuid.uuid4()),
-                "company_id": cid,
-                "item": name,
+                "company_id": cid, "item": name,
                 "buy_price": bp, "sell_price": sp,
                 "margin": txt_margin.value or "",
                 "settlement": (txt_settlement.value or "").strip(),
@@ -483,8 +621,7 @@ def main(page: ft.Page):
         content=ft.Column(
             [txt_item_name, txt_buy_price, txt_sell_price, txt_margin,
              txt_settlement, txt_qty, txt_date, txt_desc],
-            scroll=ft.ScrollMode.AUTO, height=450, tight=True, spacing=10,
-        ),
+            scroll=ft.ScrollMode.AUTO, height=450, tight=True, spacing=10),
         actions=[
             ft.ElevatedButton("ثبت کالا", on_click=save_item,
                               bgcolor=C.GREEN_600, color="white"),
@@ -534,8 +671,7 @@ def main(page: ft.Page):
             if any(c["name"] == name for c in companies):
                 show_message("این شرکت قبلاً ثبت شده است!"); return
             new = {
-                "id": str(uuid.uuid4()),
-                "name": name,
+                "id": str(uuid.uuid4()), "name": name,
                 "visitor": (txt_visitor.value or "").strip(),
                 "phone": (txt_phone.value or "").strip(),
             }
@@ -590,11 +726,9 @@ def main(page: ft.Page):
             except Exception:
                 show_message(traceback.format_exc()[-200:])
 
-        ask_confirm(
-            "حذف شرکت",
-            f'آیا از حذف شرکت «{company["name"]}» و تمام سفارشات آن مطمئن هستید؟',
-            do_delete,
-        )
+        ask_confirm("حذف شرکت",
+                    f'آیا از حذف شرکت «{company["name"]}» و تمام سفارشات آن مطمئن هستید؟',
+                    do_delete)
 
     def delete_order(oid):
         def do_delete():
@@ -608,47 +742,71 @@ def main(page: ft.Page):
 
         ask_confirm("حذف سفارش", "آیا از حذف این سفارش مطمئن هستید؟", do_delete)
 
-    # ===== خروجی متنی گزارش (اصلاح‌شده برای اندروید) =====
-    async def export_summary(e):
+    # ===== دیالوگ نمایش عکس =====
+    preview_image = ft.Image(src="", fit=ft.ImageFit.CONTAIN)
+    preview_path_text = ft.Text("", size=12, color=C.GREY_700,
+                                selectable=True, text_align=ft.TextAlign.CENTER)
+
+    def close_preview(e=None):
+        preview_dialog.open = False
+        page.update()
+
+    preview_dialog = ft.AlertDialog(
+        modal=False,
+        title=ft.Text("عکس گزارش آماده شد 📸", size=18,
+                      weight=ft.FontWeight.BOLD, color=C.TEAL_800),
+        content=ft.Column(
+            [
+                ft.Container(
+                    content=preview_image,
+                    height=380,
+                    alignment=ft.alignment.center,
+                ),
+                ft.Container(
+                    content=ft.Column([
+                        ft.Text("📍 برای ارسال در ایتا:", size=13,
+                                weight=ft.FontWeight.BOLD, color=C.TEAL_700),
+                        ft.Text("۱) از گالری، این عکس را انتخاب کنید",
+                                size=12, color=C.GREY_700),
+                        ft.Text("۲) یا در گالری، پوشهٔ AnsariOrders را باز کنید",
+                                size=12, color=C.GREY_700),
+                        preview_path_text,
+                    ], spacing=4, tight=True),
+                ),
+            ],
+            tight=True, spacing=10,
+            scroll=ft.ScrollMode.AUTO, height=520,
+        ),
+        actions=[
+            ft.TextButton("بستن", on_click=close_preview),
+        ],
+    )
+    page.overlay.append(preview_dialog)
+
+    # ===== خروجی عکس =====
+    async def export_image(e):
+        if not PIL_OK:
+            show_message("برای این قابلیت، این پکیج‌ها را نصب کنید:\n"
+                         "pip install pillow arabic-reshaper python-bidi")
+            return
+
         cid = company_dropdown.value
         if not cid:
-            show_message("ابتدا یک شرکت انتخاب کنید!")
-            return
+            show_message("ابتدا یک شرکت انتخاب کنید!"); return
 
         company = get_company(cid)
         filtered = [o for o in orders if o.get("company_id") == cid]
         if not filtered:
-            show_message("سفارشی برای خروجی وجود ندارد!")
+            show_message("سفارشی برای خروجی وجود ندارد!"); return
+
+        # ۱) ساخت عکس
+        try:
+            img_bytes = render_orders_image(company, filtered)
+        except Exception:
+            show_message(f"خطا در ساخت عکس: {traceback.format_exc()[-200:]}")
             return
 
-        # --- ساخت متن گزارش ---
-        lines = [f"گزارش سفارشات شرکت: {company['name']}"]
-        if company.get("visitor"):
-            lines.append(f"ویزیتور: {company['visitor']}")
-        if company.get("phone"):
-            lines.append(f"تلفن: {company['phone']}")
-        lines.append(f"تاریخ گزارش: {today_shamsi()}")
-        lines.append("=" * 50)
-
-        for i, o in enumerate(filtered, 1):
-            lines.append(f"{i}. {o.get('item','')} — {o.get('qty','')} کارتن")
-            if o.get("date"):
-                lines.append(f"   تاریخ تحویل: {o['date']}")
-            if o.get("buy_price"):
-                lines.append(f"   قیمت خرید: {fmt_money(o['buy_price'])}")
-            if o.get("sell_price"):
-                lines.append(f"   قیمت فروش: {fmt_money(o['sell_price'])}")
-            if o.get("margin"):
-                lines.append(f"   حاشیه سود: {o['margin']}%")
-            if o.get("settlement"):
-                lines.append(f"   مدت تسویه: {o['settlement']} روز")
-            if o.get("desc"):
-                lines.append(f"   توضیحات: {o['desc']}")
-            lines.append("")
-
-        text = "\n".join(lines)
-
-        # --- پیدا کردن مسیر قابل نوشتن ---
+        # ۲) پیدا کردن مسیر قابل نوشتن
         folder = None
 
         async def _try_get(method_name):
@@ -664,8 +822,8 @@ def main(page: ft.Page):
                 return None
 
         for name in (
-            "get_application_documents_directory",
             "get_downloads_directory",
+            "get_application_documents_directory",
             "get_external_storage_directory",
         ):
             folder = await _try_get(name)
@@ -675,36 +833,33 @@ def main(page: ft.Page):
         if not folder:
             folder = tempfile.gettempdir()
 
-        # --- تلاش برای ذخیره در فایل ---
+        saved_path = None
         try:
             out_dir = os.path.join(folder, "AnsariOrders")
             os.makedirs(out_dir, exist_ok=True)
-
             safe_name = (company["name"] or "company").replace("/", "-").replace("\\", "-")
-            filename = f"{safe_name}_{today_shamsi().replace('/', '-')}.txt"
-            path = os.path.join(out_dir, filename)
-
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(text)
-
-            show_message(f"گزارش ذخیره شد:\n{path}", is_error=False)
-            return
+            filename = f"{safe_name}_{today_shamsi().replace('/', '-')}.png"
+            saved_path = os.path.join(out_dir, filename)
+            with open(saved_path, "wb") as f:
+                f.write(img_bytes)
         except Exception:
-            pass
+            saved_path = None
 
-        # --- اگر فایل نشد، کپی در کلیپ‌بورد ---
-        try:
-            set_cb = (getattr(page, "set_clipboard_async", None)
-                      or getattr(page, "set_clipboard", None))
-            if set_cb is None:
-                raise RuntimeError("clipboard API پیدا نشد")
-            res = set_cb(text)
-            if hasattr(res, "__await__"):
-                await res
-            show_message("ذخیرهٔ فایل ممکن نشد؛ متن گزارش در کلیپ‌بورد کپی شد ✅",
-                         is_error=False)
-        except Exception:
-            show_message(f"خطا در خروجی: {traceback.format_exc()[-200:]}")
+        # ۳) نمایش پیش‌نمایش
+        b64 = base64.b64encode(img_bytes).decode("ascii")
+        preview_image.src_base64 = b64
+        preview_image.src = None
+        if saved_path:
+            preview_path_text.value = f"📁 مسیر فایل:\n{saved_path}"
+        else:
+            preview_path_text.value = "⚠ ذخیرهٔ فایل ممکن نشد؛ از همین تصویر اسکرین‌شات بگیرید."
+        preview_dialog.open = True
+        page.update()
+
+        if saved_path:
+            show_message("عکس ساخته و ذخیره شد ✅", is_error=False)
+        else:
+            show_message("عکس ساخته شد (فایل ذخیره نشد).", is_error=False)
 
     # ===== چیدمان =====
     page.add(
@@ -728,12 +883,15 @@ def main(page: ft.Page):
                 ft.ElevatedButton(
                     "ثبت کالای جدید", on_click=open_add_item,
                     icon=I.ADD_SHOPPING_CART,
-                    width=230, height=50,
+                    width=210, height=50,
                     bgcolor=C.ORANGE_600, color="white", elevation=4,
                 ),
-                ft.IconButton(I.DOWNLOAD_OUTLINED, on_click=export_summary,
-                              tooltip="خروجی متنی گزارش", icon_size=30,
-                              icon_color=C.TEAL_700),
+                ft.ElevatedButton(
+                    "عکس گزارش", on_click=export_image,
+                    icon=I.IMAGE_OUTLINED,
+                    width=170, height=50,
+                    bgcolor=C.TEAL_600, color="white", elevation=4,
+                ),
             ],
             alignment=ft.MainAxisAlignment.CENTER,
             wrap=True,
@@ -750,7 +908,6 @@ def main(page: ft.Page):
         orders_list,
     )
 
-    # رفرش اولیه
     refresh_orders_list()
 
 
