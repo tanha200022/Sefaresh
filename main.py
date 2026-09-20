@@ -1,7 +1,8 @@
 """
-سفارشات انصاری — نسخهٔ بازنویسی‌شده
+سفارشات انصاری — نسخهٔ کامل اصلاح‌شده
 """
 import os
+import tempfile
 import traceback
 import uuid
 
@@ -31,7 +32,6 @@ def today_shamsi() -> str:
 
 
 def parse_number(value):
-    """'1,234' / '۱۲۳' -> عدد / '' -> None"""
     if value is None:
         return None
     cleaned = str(value).replace(",", "").replace("،", "").replace(" ", "").strip()
@@ -132,7 +132,7 @@ def main(page: ft.Page):
     snack_bar = ft.SnackBar(
         content=snack_text,
         behavior=ft.SnackBarBehavior.FLOATING,
-        duration=2500,
+        duration=3000,
     )
     page.overlay.append(snack_bar)
 
@@ -208,16 +208,36 @@ def main(page: ft.Page):
     if companies:
         company_dropdown.value = companies[0]["id"]
 
-    # ===== فیلدهای کالا =====
+    # ===== فیلدهای کالا (با کیبورد عددی) =====
     txt_item_name = ft.TextField(label="نام کالا", **FIELD_STYLE)
-    txt_buy_price = ft.TextField(label="قیمت خرید (تومان)", **FIELD_STYLE)
-    txt_sell_price = ft.TextField(label="قیمت مصرف (تومان)", **FIELD_STYLE)
+
+    txt_buy_price = ft.TextField(
+        label="قیمت خرید (تومان)",
+        keyboard_type=ft.KeyboardType.NUMBER,
+        **FIELD_STYLE,
+    )
+    txt_sell_price = ft.TextField(
+        label="قیمت مصرف (تومان)",
+        keyboard_type=ft.KeyboardType.NUMBER,
+        **FIELD_STYLE,
+    )
     txt_margin = ft.TextField(label="حاشیه سود (%)", read_only=True, **FIELD_STYLE)
-    txt_settlement = ft.TextField(label="مدت تسویه (روز)", **FIELD_STYLE)
-    txt_qty = ft.TextField(label="تعداد سفارش (کارتن)", **FIELD_STYLE)
+    txt_settlement = ft.TextField(
+        label="مدت تسویه (روز)",
+        keyboard_type=ft.KeyboardType.NUMBER,
+        **FIELD_STYLE,
+    )
+    txt_qty = ft.TextField(
+        label="تعداد سفارش (کارتن)",
+        keyboard_type=ft.KeyboardType.NUMBER,
+        **FIELD_STYLE,
+    )
     txt_date = ft.TextField(label="تاریخ تحویل", value=today_shamsi(), **FIELD_STYLE)
-    txt_desc = ft.TextField(label="توضیحات", multiline=True,
-                            min_lines=2, max_lines=4, **FIELD_STYLE)
+    txt_desc = ft.TextField(
+        label="توضیحات",
+        multiline=True, min_lines=2, max_lines=4,
+        **FIELD_STYLE,
+    )
 
     def update_margin(_=None):
         buy = parse_number(txt_buy_price.value)
@@ -256,7 +276,11 @@ def main(page: ft.Page):
     # ===== فیلدهای شرکت =====
     txt_comp_name = ft.TextField(label="نام شرکت", **FIELD_STYLE)
     txt_visitor = ft.TextField(label="نام ویزیتور", **FIELD_STYLE)
-    txt_phone = ft.TextField(label="شماره تلفن", **FIELD_STYLE)
+    txt_phone = ft.TextField(
+        label="شماره تلفن",
+        keyboard_type=ft.KeyboardType.PHONE,
+        **FIELD_STYLE,
+    )
 
     # ===== لیست سفارشات =====
     orders_list = ft.Column(spacing=12, tight=True)
@@ -264,8 +288,8 @@ def main(page: ft.Page):
     # ===== کارت خلاصهٔ آماری =====
     summary_count = ft.Text("0", size=16, weight=ft.FontWeight.BOLD)
     summary_qty = ft.Text("0", size=16, weight=ft.FontWeight.BOLD)
-    summary_buy = ft.Text("—", size=14, weight=ft.FontWeight.BOLD)
-    summary_sell = ft.Text("—", size=14, weight=ft.FontWeight.BOLD)
+    summary_buy = ft.Text("—", size=13, weight=ft.FontWeight.BOLD)
+    summary_sell = ft.Text("—", size=13, weight=ft.FontWeight.BOLD)
 
     def _stat(label, value_ctrl, icon, color):
         return ft.Container(
@@ -584,47 +608,101 @@ def main(page: ft.Page):
 
         ask_confirm("حذف سفارش", "آیا از حذف این سفارش مطمئن هستید؟", do_delete)
 
-    # ===== خروجی متنی گزارش =====
-    def export_summary(e):
+    # ===== خروجی متنی گزارش (اصلاح‌شده برای اندروید) =====
+    async def export_summary(e):
         cid = company_dropdown.value
         if not cid:
-            show_message("ابتدا یک شرکت انتخاب کنید!"); return
+            show_message("ابتدا یک شرکت انتخاب کنید!")
+            return
+
         company = get_company(cid)
         filtered = [o for o in orders if o.get("company_id") == cid]
         if not filtered:
-            show_message("سفارشی برای خروجی وجود ندارد!"); return
-        try:
-            lines = [f"گزارش سفارشات شرکت: {company['name']}"]
-            if company.get("visitor"):
-                lines.append(f"ویزیتور: {company['visitor']}")
-            if company.get("phone"):
-                lines.append(f"تلفن: {company['phone']}")
-            lines.append(f"تاریخ گزارش: {today_shamsi()}")
-            lines.append("=" * 50)
-            for i, o in enumerate(filtered, 1):
-                lines.append(f"{i}. {o.get('item','')} — {o.get('qty','')} کارتن")
-                if o.get("date"):
-                    lines.append(f"   تاریخ تحویل: {o['date']}")
-                if o.get("buy_price"):
-                    lines.append(f"   قیمت خرید: {fmt_money(o['buy_price'])}")
-                if o.get("sell_price"):
-                    lines.append(f"   قیمت فروش: {fmt_money(o['sell_price'])}")
-                if o.get("margin"):
-                    lines.append(f"   حاشیه سود: {o['margin']}%")
-                if o.get("settlement"):
-                    lines.append(f"   مدت تسویه: {o['settlement']} روز")
-                if o.get("desc"):
-                    lines.append(f"   توضیحات: {o['desc']}")
-                lines.append("")
+            show_message("سفارشی برای خروجی وجود ندارد!")
+            return
 
-            folder = os.path.join(os.path.expanduser("~"), "AnsariOrders")
-            os.makedirs(folder, exist_ok=True)
-            safe_name = company["name"].replace("/", "-").replace("\\", "-")
+        # --- ساخت متن گزارش ---
+        lines = [f"گزارش سفارشات شرکت: {company['name']}"]
+        if company.get("visitor"):
+            lines.append(f"ویزیتور: {company['visitor']}")
+        if company.get("phone"):
+            lines.append(f"تلفن: {company['phone']}")
+        lines.append(f"تاریخ گزارش: {today_shamsi()}")
+        lines.append("=" * 50)
+
+        for i, o in enumerate(filtered, 1):
+            lines.append(f"{i}. {o.get('item','')} — {o.get('qty','')} کارتن")
+            if o.get("date"):
+                lines.append(f"   تاریخ تحویل: {o['date']}")
+            if o.get("buy_price"):
+                lines.append(f"   قیمت خرید: {fmt_money(o['buy_price'])}")
+            if o.get("sell_price"):
+                lines.append(f"   قیمت فروش: {fmt_money(o['sell_price'])}")
+            if o.get("margin"):
+                lines.append(f"   حاشیه سود: {o['margin']}%")
+            if o.get("settlement"):
+                lines.append(f"   مدت تسویه: {o['settlement']} روز")
+            if o.get("desc"):
+                lines.append(f"   توضیحات: {o['desc']}")
+            lines.append("")
+
+        text = "\n".join(lines)
+
+        # --- پیدا کردن مسیر قابل نوشتن ---
+        folder = None
+
+        async def _try_get(method_name):
+            fn = getattr(page, method_name, None)
+            if fn is None:
+                return None
+            try:
+                res = fn()
+                if hasattr(res, "__await__"):
+                    res = await res
+                return res
+            except Exception:
+                return None
+
+        for name in (
+            "get_application_documents_directory",
+            "get_downloads_directory",
+            "get_external_storage_directory",
+        ):
+            folder = await _try_get(name)
+            if folder:
+                break
+
+        if not folder:
+            folder = tempfile.gettempdir()
+
+        # --- تلاش برای ذخیره در فایل ---
+        try:
+            out_dir = os.path.join(folder, "AnsariOrders")
+            os.makedirs(out_dir, exist_ok=True)
+
+            safe_name = (company["name"] or "company").replace("/", "-").replace("\\", "-")
             filename = f"{safe_name}_{today_shamsi().replace('/', '-')}.txt"
-            path = os.path.join(folder, filename)
+            path = os.path.join(out_dir, filename)
+
             with open(path, "w", encoding="utf-8") as f:
-                f.write("\n".join(lines))
-            show_message(f"گزارش ذخیره شد: {path}", is_error=False)
+                f.write(text)
+
+            show_message(f"گزارش ذخیره شد:\n{path}", is_error=False)
+            return
+        except Exception:
+            pass
+
+        # --- اگر فایل نشد، کپی در کلیپ‌بورد ---
+        try:
+            set_cb = (getattr(page, "set_clipboard_async", None)
+                      or getattr(page, "set_clipboard", None))
+            if set_cb is None:
+                raise RuntimeError("clipboard API پیدا نشد")
+            res = set_cb(text)
+            if hasattr(res, "__await__"):
+                await res
+            show_message("ذخیرهٔ فایل ممکن نشد؛ متن گزارش در کلیپ‌بورد کپی شد ✅",
+                         is_error=False)
         except Exception:
             show_message(f"خطا در خروجی: {traceback.format_exc()[-200:]}")
 
