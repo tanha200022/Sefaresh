@@ -1,6 +1,2 @@
-import flet as ft
-
-def main(page: ft.Page):
-    page.add(ft.Text("سلام"))
-
-ft.app(target=main)
+flet==0.23.2
+jdatetime==5.2.0
