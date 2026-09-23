@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import traceback
 import uuid
@@ -205,7 +206,10 @@ class Database:
         self.conn.commit()
 
     def close(self):
-        self.conn.close()
+        try:
+            self.conn.close()
+        except Exception:
+            pass
 
 
 # -----------------------------
@@ -214,13 +218,9 @@ class Database:
 def main(page: ft.Page):
     db = Database()
 
-    # سازگاری با نسخه‌های Flet قدیمی‌تر
-    try:
-        colors = ft.Colors
-        icons = ft.Icons
-    except AttributeError:
-        colors = ft.colors
-        icons = ft.icons
+    # سازگاری با نسخه‌های مختلف Flet
+    colors = getattr(ft, "Colors", None) or getattr(ft, "colors")
+    icons = getattr(ft, "Icons", None) or getattr(ft, "icons")
 
     page.title = "مدیریت سفارشات انصاری"
     page.rtl = True
@@ -236,10 +236,7 @@ def main(page: ft.Page):
     # پیام
     # -------------------------
     snack_text = ft.Text("", color="white", size=15)
-    snack = ft.SnackBar(
-        content=snack_text,
-        duration=3000,
-    )
+    snack = ft.SnackBar(content=snack_text, duration=3000)
     page.overlay.append(snack)
 
     def message(text, error=True):
@@ -337,10 +334,7 @@ def main(page: ft.Page):
                         ],
                         alignment=ft.MainAxisAlignment.CENTER,
                     ),
-                    ft.Row(
-                        [value],
-                        alignment=ft.MainAxisAlignment.CENTER,
-                    ),
+                    ft.Row([value], alignment=ft.MainAxisAlignment.CENTER),
                 ],
                 spacing=3,
                 tight=True,
@@ -369,7 +363,10 @@ def main(page: ft.Page):
             margin.value = f"{((sell - buy) / buy) * 100:.1f}"
         else:
             margin.value = ""
-        margin.update()
+        try:
+            margin.update()
+        except Exception:
+            pass
 
     def format_price(e):
         value = normalize_digits(e.control.value)
@@ -377,7 +374,10 @@ def main(page: ft.Page):
         if value.isdigit():
             e.control.value = f"{int(value):,}"
         update_margin()
-        e.control.update()
+        try:
+            e.control.update()
+        except Exception:
+            pass
 
     buy_price.on_change = format_price
     sell_price.on_change = format_price
@@ -388,8 +388,7 @@ def main(page: ft.Page):
     def refresh_company_dropdown():
         rows = db.companies()
         company_dropdown.options = [
-            ft.dropdown.Option(str(row["id"]), row["name"])
-            for row in rows
+            ft.dropdown.Option(str(row["id"]), row["name"]) for row in rows
         ]
 
         current = selected_company["id"]
@@ -630,9 +629,7 @@ def main(page: ft.Page):
         buy_price.value = fmt_number(order["buy_price"])
         sell_price.value = fmt_number(order["sell_price"])
         margin.value = (
-            f"{order['margin']:.1f}"
-            if order["margin"] is not None
-            else ""
+            f"{order['margin']:.1f}" if order["margin"] is not None else ""
         )
         settlement.value = order["settlement"] or ""
         quantity.value = fmt_number(order["qty"])
@@ -692,7 +689,6 @@ def main(page: ft.Page):
 
         for row in rows:
             details = []
-
             if row["delivery_date"]:
                 details.append(f"تحویل: {row['delivery_date']}")
             if row["buy_price"] is not None:
@@ -837,19 +833,19 @@ def main(page: ft.Page):
     # -------------------------
     report_text = {"value": ""}
 
-    preview_text = ft.Text(
-        "",
-        size=14,
-        selectable=True,
-    )
-
+    preview_text = ft.Text("", size=14, selectable=True)
     preview_dialog = ft.AlertDialog(modal=True)
+
+    def close_report(e=None):
+        preview_dialog.open = False
+        page.update()
 
     async def copy_report(e):
         text = report_text["value"]
         if not text:
             return
 
+        # Flet 0.24+: set_clipboard async
         setter = getattr(page, "set_clipboard_async", None)
         if setter is None:
             setter = getattr(page, "set_clipboard", None)
@@ -860,24 +856,17 @@ def main(page: ft.Page):
 
         try:
             result = setter(text)
-            if hasattr(result, "__await__"):
+            if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
                 await result
             message("گزارش کپی شد؛ حالا در ایتا Paste کنید.", False)
         except Exception:
             message("خطا در کپی متن.")
 
-    def close_report(e=None):
-        preview_dialog.open = False
-        page.update()
-
     preview_dialog.title = ft.Text("گزارش سفارشات")
     preview_dialog.content = ft.Container(
         width=430,
         height=460,
-        content=ft.Column(
-            [preview_text],
-            scroll=ft.ScrollMode.AUTO,
-        ),
+        content=ft.Column([preview_text], scroll=ft.ScrollMode.AUTO),
     )
     preview_dialog.actions = [
         ft.ElevatedButton(
@@ -993,11 +982,9 @@ def main(page: ft.Page):
     refresh_company_dropdown()
     refresh_orders()
 
-    def cleanup(e):
-        db.close()
 
-    page.on_disconnect = cleanup
-
-
+# -----------------------------
+# اجرا
+# -----------------------------
 if __name__ == "__main__":
     ft.app(target=main)
