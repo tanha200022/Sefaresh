@@ -9,6 +9,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repository
@@ -26,26 +27,41 @@ jobs:
           distribution: "temurin"
           java-version: "17"
 
-      - name: Accept Android Licenses
-        run: yes | /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --licenses
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install flet
           pip install -r requirements.txt
+          # flet-cli فقط برای build لازم است؛ نسخه‌اش باید با flet یکی باشد
+          # (داخل requirements.txt نمی‌گذاریم تا وارد APK نشود)
+          pip install flet-cli==0.24.1
 
-      - name: Check Python syntax
+      - name: Ensure Persian font exists
+        run: |
+          mkdir -p assets/fonts
+          if [ ! -f assets/fonts/Vazirmatn-Regular.ttf ]; then
+            curl -fL -o assets/fonts/Vazirmatn-Regular.ttf \
+              https://github.com/rastikerdar/vazirmatn/raw/master/fonts/ttf/Vazirmatn-Regular.ttf
+          fi
+
+      - name: Check code (syntax + import)
         run: |
           python -m py_compile main.py
+          python -c "import main"
+
+      - name: Accept Android licenses
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
 
       - name: Build Android APK
         run: |
-          yes | flet build apk --verbose --project "ansari_orders" --org "com.ansari.orders"
+          flet build apk --verbose \
+            --project "ansari_orders" \
+            --org "com.ansari.orders" \
+            --product "سفارش‌یار"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ansari-orders-apk
-          path: build/apk/**/*.apk
+          path: build/apk/*.apk
           if-no-files-found: error
