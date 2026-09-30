@@ -1,2 +1,1 @@
-jdatetime==5.2.0
-certifi
+flet==0.24.1
