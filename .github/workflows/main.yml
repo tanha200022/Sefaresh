@@ -26,15 +26,18 @@ jobs:
           distribution: "temurin"
           java-version: "17"
 
+      - name: Accept Android Licenses
+        run: yes | /usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager --licenses
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install flet-cli
+          pip install flet
+          pip install -r requirements_2.txt
 
       - name: Check Python syntax
         run: |
-          python -m py_compile main.py
+          python -m py_compile main_2.py
 
       - name: Build Android APK
         run: |
@@ -44,5 +47,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ansari-orders-apk
-          path: build/apk/*.apk
+          path: build/apk/**/*.apk
           if-no-files-found: error
