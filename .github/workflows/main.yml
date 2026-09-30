@@ -38,7 +38,7 @@ jobs:
 
       - name: Build Android APK
         run: |
-          flet build apk --verbose --project "ansari_orders" --org "com.ansari.orders"
+          yes | flet build apk --verbose --project "ansari_orders" --org "com.ansari.orders"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
