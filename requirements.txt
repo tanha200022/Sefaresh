@@ -1,2 +1,1 @@
-flet==0.24.1
 jdatetime==5.2.0
